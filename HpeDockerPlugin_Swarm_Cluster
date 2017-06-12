@@ -1,0 +1,282 @@
+Understanding Swarm clusters
+A swarm is a group of machines that are running Docker and have been joined into a cluster. After that has happened, you continue to run the Docker commands you’re used to, but now they are executed on a cluster by a swarm manager. The machines in a swarm can be physical or virtual. After joining a swarm, they are referred to as nodes.
+Swarm managers can use several strategies to run containers, such as “emptiest node” – which fills the least utilized machines with containers. Or “global”, which ensures that each machine gets exactly one instance of the specified container. You instruct the swarm manager to use these strategies in the Compose file, just like the one you have already been using.
+Swarm managers are the only machines in a swarm that can execute your commands, or authorize other machines to join the swarm as workers. Workers are just there to provide capacity and do not have the authority to tell any other machine what it can and can’t do.
+Up until now you have been using Docker in a single-host mode on your local machine. But Docker also can be switched into swarm mode, and that’s what enables the use of swarms. Enabling swarm mode instantly makes the current machine a swarm manager. From then on, Docker will run the commands you execute on the swarm you’re managing, rather than just on the current machine.
+
+Set up your Swarm
+
+A swarm is made up of multiple nodes, which can be either physical or virtual machines. The basic concept is simple enough: run docker swarm init to enable swarm mode and make your current machine a swarm manager, then run docker swarm join on other machines to have them join the swarm as a worker. Choose a tab below to see how this plays out in various contexts. 
+
+To know how nodes work and how to maintain the quorum of managers, refer below links:
+https://docs.docker.com/engine/swarm/how-swarm-mode-works/nodes/
+https://docs.docker.com/engine/swarm/admin_guide/#operate-manager-nodes-in-a-swarm
+
+We’ll use blade servers to quickly create a three-machine cluster and turn it into a swarm.
+Perform below steps in one/all of the blade servers as instructed:
+
+1.	Install Docker Engine.
+$ wget -qO- https://get.docker.com/ | sh
+$ sudo apt-get install docker-engine=17.03.1~ce-0~ubuntu-xenial
+
+2.	Clone the HPE Docker Volume plugin from the git repository.
+
+$ git clone https://github.com/hpe-storage/python-hpedockerplugin.git
+
+3.	Run the containerize script from python-hpedockerplugin folder.
+
+$ sudo sh ./containerize.sh
+
+4.	Setup the plugin Configuration file.
+Sample configuration files for 3PAR and StoreVirtual Lefthand are located in the config/hpe.conf.sample.xxx files.
+3PAR iSCSI: config/hpe.conf.sample.3par
+StoreVirtual Lefthand: config/hpe.conf.sample.lefthand
+<starting from plugin folder>
+cd config
+cp <sample_file> hpe.conf
+<edit hpe.conf>
+
+Copy the edited configs into /etc/hpedockerplugin/hpe.conf.
+Use the common hpe.conf file in all three nodes which will have same “host_etcd_ip_address” in each hpe.conf file.
+
+5.	Prepare docker-compose.yml file.
+Navigate to quick-start folder. Copy and edit the docker-compose.yml.example as appropriate to your env.
+$ cp docker-compose.yml.example docker-compose.yml
+$ cat docker-compose.yml
+hpedockerplugin:
+  image: hpe-storage/python-hpedockerplugin:latest
+  container_name: sumit
+  net: host
+  privileged: true
+  volumes:
+     - /dev:/dev
+     - /run/docker/plugins:/run/docker/plugins:rw
+     - /lib/modules:/lib/modules
+     - /var/lib/docker/:/var/lib/docker
+     - /etc/hpedockerplugin/data:/etc/hpedockerplugin/data:shared
+     - /etc/iscsi/initiatorname.iscsi:/etc/iscsi/initiatorname.iscsi
+     - /etc/hpedockerplugin:/etc/hpedockerplugin
+     - /var/run/docker.sock:/var/run/docker.sock
+     - /home/docker/.ssh:/home/docker/.ssh
+     - /etc/iscsi/iscsid.conf:/etc/iscsi/iscsid.conf
+     - /etc/multipath.conf:/etc/multipath.conf
+ 
+Edit docker-compose.yml and tag the image (e.g. docker tag myhpedockerplugin:latest)
+
+
+6.	Install docker compose.
+Run the below command to install docker compose:
+$ curl -L https://github.com/docker/compose/releases/download/1.12.0/docker-compose-`uname -s`-`uname -m` > /usr/local/bin/docker-compose
+$ chmod u+x /usr/local/bin/docker-compose
+
+
+7.	Multi-node etcd cluster setup – Install etcd
+
+In order to expose the etcd API to clients outside of the Docker host you'll need use the host IP address when configuring etcd.
+The following docker run command will expose the etcd client API over ports 4001 and 2379, and expose the peer port over 2380.
+This will run the latest release version of etcd. You can specify version if needed (e.g. quay.io/coreos/etcd:v2.2.0).
+The value used for the -initial-cluster flag, must contain the peer urls for each etcd member in the cluster.
+Note: If you plan to run a container orchestration service (such as Docker UCP or Kubernetes) in a cluster of systems then refer to the etcd cluster setup below. These orchestration services typically already have setup instructions for an etcd cluster, so there is no need to create a separate etcd cluster in these cases. The plugin can safely share access to the same etcd cluster being used by the orchestration technology.
+
+etcd0
+docker run -d -v /usr/share/ca-certificates/:/etc/ssl/certs -p 4001:4001 -p 2380:2380 -p 2379:2379 \
+ --name etcd quay.io/coreos/etcd \
+ -name etcd0 \
+ -advertise-client-urls http://10.50.0.158:2379,http://10.50.0.158:4001 \
+ -listen-client-urls http://0.0.0.0:2379,http://0.0.0.0:4001 \
+ -initial-advertise-peer-urls http://10.50.0.158:2380 \
+ -listen-peer-urls http://0.0.0.0:2380 \
+ -initial-cluster-token etcd-cluster-1 \
+ -initial-cluster etcd0=http://10.50.0.158:2380,etcd1=http://10.50.0.152:2380,etcd2=http://10.50.0.153:2380 \
+ -initial-cluster-state new
+
+etcd1
+docker run -d -v /usr/share/ca-certificates/:/etc/ssl/certs -p 4001:4001 -p 2380:2380 -p 2379:2379 \
+ --name etcd quay.io/coreos/etcd \
+ -name etcd1 \
+ -advertise-client-urls http://10.50.0.152:2379,http://10.50.0.152:4001 \
+ -listen-client-urls http://0.0.0.0:2379,http://0.0.0.0:4001 \
+ -initial-advertise-peer-urls http://10.50.0.152:2380 \
+ -listen-peer-urls http://0.0.0.0:2380 \
+ -initial-cluster-token etcd-cluster-1 \
+ -initial-cluster etcd0=http://10.50.0.158:2380,etcd1=http://10.50.0.152:2380,etcd2=http://10.50.0.153:2380 \
+ -initial-cluster-state new
+
+etcd2
+docker run -d -v /usr/share/ca-certificates/:/etc/ssl/certs -p 4001:4001 -p 2380:2380 -p 2379:2379 \
+ --name etcd quay.io/coreos/etcd \
+ -name etcd2 \
+ -advertise-client-urls http://10.50.0.153:2379,http://10.50.0.153:4001 \
+ -listen-client-urls http://0.0.0.0:2379,http://0.0.0.0:4001 \
+ -initial-advertise-peer-urls http://10.50.0.153:2380 \
+ -listen-peer-urls http://0.0.0.0:2380 \
+ -initial-cluster-token etcd-cluster-1 \
+ -initial-cluster etcd0=http://10.50.0.158:2380,etcd1=http://10.50.0.152:2380,etcd2=http://10.50.0.153:2380 \
+ -initial-cluster-state new
+
+Once the cluster has been bootstrapped etcd clients can be configured with a list of etcd members:
+etcdctl -C http://10.50.0.158:2379,http://10.50.0.152:2379,http://10.50.0.153:2379 member list
+
+You can verify etcd is running as a container on each node. Verify using below command:
+$ docker ps
+CONTAINER ID        IMAGE                        COMMAND                  CREATED             STATUS              PORTS                                                                NAMES
+e6b0ab0b91c8        quay.io/coreos/etcd:v2.2.0   "/etcd -name etcd0..."   1 minute ago          Up 1 minute           0.0.0.0:2379-2380->2379-2380/tcp, 0.0.0.0:4001->4001/tcp, 7001/tcp   etcd
+
+8.	Install docker-machine on master node. 
+
+Download the Docker Machine binary and extract it to your PATH.
+  $ curl -L https://github.com/docker/machine/releases/download/v0.10.0/docker-machine-`uname -s`-`uname -m` >/tmp/docker-machine &&
+  chmod +x /tmp/docker-machine &&
+  sudo cp /tmp/docker-machine /usr/local/bin/docker-machine
+
+9.	Configure Passwordless Login using SSH Keygen.
+
+Please follow below steps to configure passwordless login:
+Step 1: First login into server 10.50.0.158 (master node) with user and generate a pair of public keys using following command.
+$ ssh-keygen –t rsa
+Step 2: Use SSH from server 10.50.0.158 to connect server 10.50.0.152 (worker1 node) using user and create .ssh directory under it, using following command.
+$ ssh <username>@10.50.0.152 mkdir –p .ssh
+Repeat the same for worker2 node 
+Step 3: Use SSH from server 10.50.0.158 and upload new generated public key (id_rsa.pub) on server 10.50.0.152 under <username>‘s .ssh directory as a file name authorized_keys.
+$ cat .ssh/id_rsa.pub | ssh <username>@10.50.0.152 ‘cat >>.ssh/authorized_keys’
+<username>@10.50.0.152’s password: [Enter your password here].
+Repeat the same for worker2 node.
+Step 4: Due to different SSH versions on servers, we need to set permissions on .ssh directory and authorized_keys file.
+$ ssh <username>@10.50.0.152 "chmod 700 .ssh; chmod 640 .ssh/authorized_keys"
+Repeat the same for worker2 node.
+
+10.	Create Docker Machines
+
+The first step is to create a set of Docker machines that will act as nodes in our Docker Swarm. Here, 3 Docker Machines will be created, where one of them will act as the Manager (Leader) and the other will be worker nodes.
+The standard command to create a Docker Machine named manager1 as shown below:
+$ docker-machine create --driver generic --generic-ip-address 10.50.0.158 --generic-ssh-user stack --generic-ssh-key=/home/stack/.ssh/id_rsa --swarm-master manager1
+
+Similarly, create the other worker nodes from manager node only.
+$ docker-machine create --driver generic --generic-ip-address 10.50.0.152 --generic-ssh-user stack --generic-ssh-key=/home/stack/.ssh/id_rsa worker1
+
+$ docker-machine create --driver generic --generic-ip-address 10.50.0.153 --generic-ssh-user stack --generic-ssh-key=/home/stack/.ssh/id_rsa worker2
+
+After creating, it is advised that you fire the docker-machine ls command to check on the status of all the Docker machines.
+$ docker-machine ls
+NAME       ACTIVE   DRIVER    STATE     URL                        DOCKER       
+manager1   -        generic   Running   tcp://10.50.0.158:2376     v17.03.0-ce
+worker1    -        generic   Running   tcp://10.50.0.152:2376     v17.03.0-ce
+worker2    -        generic   Running   tcp://10.50.0.153:2376     v17.03.0-ce
+Note down the IP Address of the manager1, since you will be needing that. MANAGER_IP will be called in the text later.
+One way to get the IP address of the manager1 machine is as follows:
+
+$ docker-machine ip manager1
+10.50.0.158
+You should be comfortable with doing a SSH into any of the Docker Machines. You will need that since we will primarily be executing the docker commands from within the SSH session to that machine.
+Keep in mind that using docker-machine utility, you can SSH into any of the machines as follows:
+
+$ docker-machine ssh <machine-name>
+
+
+11.	Our Swarm Cluster
+
+Now that our machines are setup, we can proceed with setting up the Swarm.
+The first thing to do is initialize the Swarm. We will SSH into the manager1 machine and initialize the swarm in there.
+
+$ docker-machine ssh manager1
+Perform the following steps:
+$ docker swarm init --advertise-addr MANAGER_IP
+
+On machine, it looks like this:
+docker@manager1:~$ docker swarm init — advertise-addr 10.50.0.158
+Swarm initialized: current node (5oof62fetd4gry7o09jd9e0kf) is now a manager.
+To add a worker to this swarm, run the following command:
+docker swarm join \
+ — token SWMTKN-1–5mgyf6ehuc5pfbmar00njd3oxv8nmjhteejaald3yzbef7osl1-ad7b1k8k3bl3aa3k3q13zivqd \
+ 10.50.0.158:2377
+To add a manager to this swarm, run ‘docker swarm join-token manager’ and follow the instructions.
+docker@manager1:~$
+You will also notice that the output mentions the docker swarm join command to use in case you want another node to join as a worker. Keep in mind that you can have a node join as a worker or as a manager. At any point in time, there is only one LEADER and the other manager nodes will be as backup in case the current LEADER opts out.
+At this point you can see your Swarm status by firing the following command as shown below:
+docker@manager1:~$ docker node ls
+ID              HOSTNAME STATUS AVAILABILITY MANAGER STATUS
+5oof62fetd..*   manager1 Ready  Active       Leader
+This shows that there is a single node so far i.e. manager1 and it has the value of Leader for the MANAGER column.
+Stay in the SSH session itself for manager1.
+
+12.	Joining as Worker node
+To find out what docker swarm command to use to join as a node, you will need to use the join-token <role> command.
+To find out the join command for a worker1, fire the following command:
+stack@manager1:~$ docker swarm join-token worker
+To add a worker to this swarm, run the following command:
+
+    docker swarm join \
+    --token SWMTKN-1-4382oaleny9c9je1ld0u6qk0uknxkvp5ihl01t2opih0qod1ou-3fk1cqoblpf2ievjqf5rifab0 \
+    10.50.0.158:2377
+docker@manager1:~$
+
+
+13.	Joining as Manager node
+To find out the join command for a manager, fire the following command:
+stack@manager1:~$ docker swarm join-token manager
+To add a manager to this swarm, run the following command:
+
+    docker swarm join \
+    --token SWMTKN-1-4382oaleny9c9je1ld0u6qk0uknxkvp5ihl01t2opih0qod1ou-dcetl9aru8wsxr5ktapv7e0ta \
+    10.50.0.158:2377
+docker@manager1:~$
+Notice in both the above cases, that you are provided a token and it is joining the Manager node (you will be able to identify that the IP address is the same the MANAGER_IP address).
+Keep the SSH to manager1 open. And fire up other command terminals for working with other worker docker machines.
+
+
+14.	Adding Worker Nodes to our Swarm.
+Now that we know how to check the command to join as a worker, we can use that to do a SSH into each of the worker Docker machines and then fire the respective join command in them.
+In our case, we have 2 worker machines (worker1/2). For the first worker1 Docker machine, I do the following:
+•	SSH into the worker1 machine i.e. docker-machine ssh worker1
+•	Then fire the respective command that we got for joining as a worker. The output will be shown as below:
+docker@worker1:~$ docker swarm join \
+    --token SWMTKN-1-4382oaleny9c9je1ld0u6qk0uknxkvp5ihl01t2opih0qod1ou-dcetl9aru8wsxr5ktapv7e0ta \
+    10.50.0.158:2377
+
+docker@worker1:~$
+We need to do the same thing by launching SSH sessions for worker2 and then pasting the same command since we want all of them to be worker nodes.
+After making all my worker nodes join the Swarm, we go back to my manager1 SSH session and fire the following command to check on the status of my Swarm i.e. see the nodes participating in it:
+
+stack@manager1:~$ docker node ls
+ID                           HOSTNAME  STATUS  AVAILABILITY  MANAGER STATUS
+64e75dz7eq7r9n4x3t7pr9b67 *  manager1  Ready   Active        Leader
+jl9eod7qosoe8qela1nsploqw    worker2   Ready   Active
+lyqs5d2dx4fjy4wufgtqguedl    worker1   Ready   Active
+
+We can also do execute the standard docker info command here and zoom into the Swarm section to check out the details for our Swarm.
+Swarm: active
+ NodeID: 64e75dz7eq7r9n4x3t7pr9b67
+ Is Manager: true
+ ClusterID: xy7llgey2o88blag27lytirqf
+ Managers: 1
+ Nodes: 3
+ Orchestration:
+  Task History Retention Limit: 5
+ Raft:
+  Snapshot Interval: 10000
+  Number of Old Snapshots to Retain: 0
+  Heartbeat Tick: 1
+  Election Tick: 3
+ Dispatcher:
+  Heartbeat Period: 5 seconds
+ CA Configuration:
+  Expiry Duration: 3 months
+ Node Address: 10.50.0.158
+ Manager Addresses:
+  10.50.0.158:2377
+
+
+
+15.	Run the HPE Docker Volume plugin as a container.
+On master node, navigate to python-hpedockerplugin/quick-start folder and run the following command:
+$ docker-compose up -d
+Repeat this step on both the worker nodes.
+You can verify HPE Docker Volume plugin is running as a container on each node. Verify using below command:
+$ docker ps
+CONTAINER ID        IMAGE                                                           COMMAND                  CREATED             STATUS              PORTS                                                                NAMES
+5fbf57a6a0b4        hub.docker.hpecorp.net/hpe-storage/hpedockerplugin:v1.1.1.rc3   "/bin/sh -c ./plug..."   1 minute ago          Up 1 minute                      sumit1
+
+
+
+
+
